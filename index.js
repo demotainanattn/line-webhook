@@ -3,6 +3,7 @@ import http from "node:http";
 
 const port = Number(process.env.PORT || 3000);
 const lineReplyUrl = "https://api.line.me/v2/bot/message/reply";
+let runtimeGatewayBaseUrl = "";
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -55,7 +56,7 @@ function textMessage(text) {
 }
 
 async function forwardToGateway(rawBody) {
-  const gatewayBaseUrl = String(process.env.GATEWAY_BASE_URL || "").replace(/\/$/, "");
+  const gatewayBaseUrl = String(runtimeGatewayBaseUrl || process.env.GATEWAY_BASE_URL || "").replace(/\/$/, "");
   const sharedSecret = process.env.GATEWAY_SHARED_SECRET || "";
   if (!gatewayBaseUrl || !sharedSecret) {
     throw new Error("Render 環境變數缺少 GATEWAY_BASE_URL 或 GATEWAY_SHARED_SECRET");
@@ -81,10 +82,10 @@ async function handleWebhook(req, res) {
   const required = [
     "LINE_CHANNEL_SECRET",
     "LINE_CHANNEL_ACCESS_TOKEN",
-    "GATEWAY_BASE_URL",
     "GATEWAY_SHARED_SECRET"
   ];
   const missing = required.filter((key) => !process.env[key]);
+  if (!runtimeGatewayBaseUrl && !process.env.GATEWAY_BASE_URL) missing.push("GATEWAY_BASE_URL");
   if (missing.length) {
     json(res, 500, { error: `缺少環境變數：${missing.join(", ")}` });
     return;
@@ -114,15 +115,51 @@ async function handleWebhook(req, res) {
   json(res, 200, { ok: true, results: gatewayResult.results || [] });
 }
 
+function verifyGatewayUpdate(rawBody, signature) {
+  const sharedSecret = process.env.GATEWAY_SHARED_SECRET || "";
+  if (!sharedSecret || !signature) return false;
+  return timingSafeEqual(sign(sharedSecret, rawBody), signature);
+}
+
+async function handleGatewayUpdate(req, res) {
+  const rawBody = await readRawBody(req);
+  if (!verifyGatewayUpdate(rawBody, req.headers["x-gateway-signature"])) {
+    json(res, 401, { error: "Gateway URL 更新簽章驗證失敗" });
+    return;
+  }
+
+  const payload = JSON.parse(rawBody || "{}");
+  const nextUrl = String(payload.gatewayBaseUrl || "").replace(/\/$/, "");
+  if (!/^https:\/\/[a-z0-9.-]+$/i.test(nextUrl)) {
+    json(res, 400, { error: "gatewayBaseUrl 必須是 HTTPS URL" });
+    return;
+  }
+
+  runtimeGatewayBaseUrl = nextUrl;
+  json(res, 200, { ok: true, gatewayBaseUrl: runtimeGatewayBaseUrl });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (req.method === "GET" && url.pathname === "/") {
-      json(res, 200, { ok: true, service: "line-webhook-render-forwarder" });
+      json(res, 200, {
+        ok: true,
+        service: "line-webhook-render-forwarder",
+        gatewayBaseUrlConfigured: Boolean(runtimeGatewayBaseUrl || process.env.GATEWAY_BASE_URL)
+      });
       return;
     }
     if (req.method === "GET" && url.pathname === "/health") {
-      json(res, 200, { ok: true, service: "line-webhook-render-forwarder" });
+      json(res, 200, {
+        ok: true,
+        service: "line-webhook-render-forwarder",
+        gatewayBaseUrlConfigured: Boolean(runtimeGatewayBaseUrl || process.env.GATEWAY_BASE_URL)
+      });
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/admin/gateway-url") {
+      await handleGatewayUpdate(req, res);
       return;
     }
     if (req.method === "POST" && url.pathname === "/webhook") {
