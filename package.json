@@ -1,12 +1,12 @@
 {
-  "name": "line-webhook",
+  "name": "line-webhook-render-forwarder",
   "version": "1.0.0",
-  "main": "index.js",
+  "private": true,
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
-  "dependencies": {
-    "@line/bot-sdk": "^9.9.0",
-    "express": "^4.19.2"
+  "engines": {
+    "node": ">=20"
   }
 }
